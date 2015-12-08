@@ -1,13 +1,13 @@
 {-# LANGUAGE TypeFamilies, MultiParamTypeClasses #-}
 
-module Index where
+module Storage where
 
 data ModifyM a = ModifyM (Index a -> a -> a) (Index a)
 
 class Monad m => Storage m a where
         data family Index a
-        get :: Index a  -> m a
-        put :: a -> m (Index a)
-        update :: a -> Maybe (ModifyM a) -> m (Index a)
+        pull :: Index a  -> m a
+        push :: a -> m (Index a)
+        update :: a -> (Index a -> a -> a) -> Index a -> m (Index a)
 
 

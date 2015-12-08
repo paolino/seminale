@@ -1,9 +1,15 @@
-{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, FlexibleContexts, UndecidableInstances #-}
-import qualified Control.Monad.State as C
+{-# LANGUAGE TypeFamilies, MultiParamTypeClasses #-}
 
-import Index
-import qualified  Data.Map as M
+-- | Storage model
+module Storage where
 
-instance C.MonadState (M.Map Integer a) m => Storage m a where
-        get i = flip (M.!) i <$> get 
-        put i x = M.insert i x <$> C.modify 
+-- | Backend interface
+class Monad m => Storage m a where
+        data family Index a
+        pull :: Index a  -> m a -- ^ pick a value of type a at given index
+        push :: a -> m (Index a) -- ^ store a value of type a
+        update :: a -> (Index a -> a -> a) -> Index a -> m (Index a) -- ^ store a value of type a and modify the value at the given index feeding the new index
+        delete :: Index a -> m ()
+        
+
+

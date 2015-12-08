@@ -1,66 +1,68 @@
 
-{-# LANGUAGE TypeFamilies, ViewPatterns, TemplateHaskell, Rank2Types, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, UndecidableInstances, EmptyDataDecls, DataKinds, GADTs, StandaloneDeriving, ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies, ViewPatterns, TemplateHaskell, Rank2Types, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, UndecidableInstances, EmptyDataDecls, DataKinds, GADTs, StandaloneDeriving, ScopedTypeVariables, ConstraintKinds #-}
 
 module Semantics where
 
-import Resources (Res, Browse (Forth,Back,goforth,goback),Time, actual,atTime,Mod )
+import Resources 
 import qualified Data.Map as M
 import Data.List (delete)
-import Index
+import Storage hiding (delete)
 
-
-data family Pred a 
-
-type IR a = Index (Res a)
-
-data Link a = Link (Maybe (Time a)) (IR a) 
-
-deriving instance (Eq (Time a), Eq (IR a)) => Eq (Link a)
+type family Value a
 
 data Obj a 
-  = Semantic a
+  = Literal (Value a)
   | Single (Link a) 
   | Coll [Link a] 
 
-deriving instance (Eq (Time a), Eq (IR a),Eq a) => Eq (Obj a)
+data ModObj a = AddLink (Link a) | DeleteLink (Link a) | ChangeLink (Link a) | Substitute (Value a)
+
+deriving instance (Eq (Time a), Eq (Index a),Eq (Value a)) => Eq (Obj a)
+deriving instance (Ord (Time a), Ord (Index a),Ord (Value a)) => Ord (Obj a)
+
+
 instance Eq (Link a) => Browse (Obj a) where
-        data Forth (Obj a) = AddLinkF (Link a) | DeleteLinkF (Link a) | ChangeLinkF (Link a) | SubstituteF a
-        data Back (Obj a) = AddLinkB (Link a) | DeleteLinkB (Link a) | ChangeLinkB (Link a) | SubstituteB a
-        goforth (AddLinkF i) (Coll is) = ((Coll $ (i:) . delete i $ is), DeleteLinkB i)
-        goforth (DeleteLinkF i) (Coll is) = (  (Coll $ delete i $ is), AddLinkB i) 
-        goforth (ChangeLinkF i) (Single i') = (Single i, ChangeLinkB i')
-        goforth (SubstituteF x) (Semantic x') = (Semantic x, SubstituteB x')
-        goback (AddLinkB i) (Coll is) = ( (Coll $ (i:) . delete i $ is), DeleteLinkF i)
-        goback (DeleteLinkB i) (Coll is) = (  (Coll $ delete i $ is), AddLinkF i)
-        goback (ChangeLinkB i) (Single i') = (Single i, ChangeLinkF i')
-        goback (SubstituteB x) (Semantic x') = (Semantic x, SubstituteF x')
+        type Forth (Obj a) = ModObj  a
+        type Back (Obj a) = ModObj a
+        goforth (AddLink i) (Coll is) = ((Coll $ (i:) . delete i $ is), DeleteLink i)
+        goforth (DeleteLink i) (Coll is) = (  (Coll $ delete i $ is), AddLink i) 
+        goforth (ChangeLink i) (Single i') = (Single i, ChangeLink i')
+        goforth (Substitute x) (Literal x') = (Literal x, Substitute x')
+        checkForth _ _ = True -- check for dups ?!
+        goback = goforth
 
+type family Pred a 
+newtype Node a = Node {unNode :: M.Map (Pred a) (Obj a)}
 
-newtype Node a = Node (M.Map (Pred a) (Obj a)) 
+data ModPred  a = New (Pred a) (Obj a) 
+                | Delete (Pred a) 
+                | Correct (Pred a) (Forth (Obj a))
 
+deriving instance (Eq (Pred a), Eq (Time a), Eq (Value a), Eq (Index a), Eq (ModObj  a)) => Eq (ModPred a)
+deriving instance (Ord (Pred a), Ord (Time a), Ord (Value a), Ord (Index a), Ord (ModObj  a)) => Ord (ModPred a)
+
+type OP  a = (Ord (Pred a), Ord (Time a), Ord (Value a), Ord (Index a), Ord (ModObj a))
 -- delegate objects modification to their Browse instance
 instance  (Ord (Pred a), Eq (Link a)) => Browse (Node a) where
-        data Forth (Node a) 
-                = NewF (Pred a) (Obj a) 
-                | DeleteF (Pred a) 
-                | CorrectF (Pred a) (Forth (Obj a))
-        data Back (Node a) 
-                = DeleteB (Pred a) 
-                | NewB (Pred a) (Obj a)
-                | CorrectB (Pred a) (Back (Obj a))
-        goforth (NewF p o) (Node m)  = (Node $ M.insert p o m, DeleteB p) 
-        goforth (DeleteF p ) (Node m) = (Node $ M.delete p m, NewB p o) where
+        type Forth (Node  a) = ModPred  a
+        type Back (Node  a) = ModPred  a
+        goforth (New p o) (Node m)  = (Node $ M.insert p o m, Delete p) 
+        goforth (Delete p ) (Node m) = (Node $ M.delete p m, New p o) where
                 Just o = M.lookup p m
-        goforth (CorrectF p f) (Node m) = (Node $ M.insert p o m, CorrectB p f') where
+        goforth (Correct p f) (Node m) = (Node $ M.insert p o m, Correct p f') where
                 Just (o,f') = goforth f <$> M.lookup p m
-        goback (DeleteB p) (Node m)  = (Node $ M.delete p m, NewF p o) where
-                Just o = M.lookup p m
-        goback (NewB p o) (Node m)  = (Node $ M.insert p o m, DeleteF p) 
-        goback (CorrectB p b) (Node m) = (Node $ M.insert p o m, CorrectF p b') where
-                Just (o,b') = goback b <$> M.lookup p m
+        goback = goforth
+        checkForth _ _ = True
 
 
-follow :: forall a m . (Ord (Time a), Browse a, Storage m (Mod a), Storage m (Res a)) => Link a -> m (Maybe (Res a))
-follow (Link Nothing i) = Just <$> (get i >>= actual)
-follow (Link (Just t) i) = get i >>= flip atTime t
+data PredMod = LBack | LForth deriving (Eq,Ord)
+data ObjMod a = OBack (Mlink (Back a) a) | OForth (Mlink (Forth a) a)
+fromOBack (Literal (OBack x)) = x
+fromOForth (Literal (OForth x)) = x
+modFromNode :: (Pred a ~ PredMod, ObjMod a ~ Value a) => Node a -> Mod a
+modFromNode (Node m) = Mod  (fromOBack <$> M.lookup LBack m) 
+        (fromOForth <$> M.lookup LForth m)
 
+follow :: forall a  m . (Time a ~ Time (Timed a), Time (Mod a) ~ Time a, Ord (Time a), Browse a, Storage m (Mod a), Storage m (Timed a)) => Link (Timed a) -> m (Maybe (Timed a))
+follow (Link Nothing i) = Just <$> (pull i >>= actual)
+follow (Link (Just t) i) = pull i >>= flip atTime t

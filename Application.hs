@@ -3,7 +3,7 @@
 module Application where
 
 import Resources (Time, Forth, Res)
-import Semantics ( Browse(CorrectF))
+import Semantics
 import Data.Bson
 import Data.Time
 import Data.Text
@@ -80,14 +80,14 @@ type Response a = Change (Maybe a)
 
 realize :: (Eq IRV,Monad m ,Storage m Pending , Storage m N ) => Change a -> m a
 realize (Direct p f i) = do
-        m <- get i
+        m <- pull i
         return $ if check p f m then Just $ Post f i else Nothing
 realize (Close p j) = do
-        Pending t i <- get j
-        fmap ($ i) <$> checkI p t <$> get i
+        Pending t i <- pull j
+        fmap ($ i) <$> checkI p t <$> pull i
 realize (Open p t@(Pending _ i)) = do
-        m <- get i
-        if owned p m then Just <$> put t else return Nothing
+        m <- pull i
+        if owned p m then Just <$> push t else return Nothing
                 
         
         
