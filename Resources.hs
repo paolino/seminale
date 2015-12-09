@@ -6,88 +6,119 @@ import Control.Lens (set)
 import Control.Lens.TH
 import Data.Maybe
 import Control.Monad.Reader
+import Control.Monad.Except
 import Storage
+import GHC.Exts
 
 
 
-class Browse a where
-  type Back a
-  type Forth a
-  checkForth :: Forth a -> a -> Bool
-  goforth :: Forth a -> a -> (a, Back a)
-  goback :: Back a -> a -> (a, Forth a)
+-- history is defined as a double linked list, 
+class History a where
+  type Back a  -- type of reversed modifications
+  type Forth a -- type of a straight modification
+  checkForth :: Forth a -> a -> Bool  -- possibly a fake, dunno. check if a Forth is applyable to an a
+  goforth :: Forth a -> a -> (a, Back a) -- apply a forth step, defining the new state and a reverse operation
+  goback :: Back a -> a -> a -- apply a back step
 
+-- application specific value for Time
 type family Time a
 
-data Link a = Link (Maybe (Time a)) Integer
+-- a possibly timed link
+data Link a = TLink (Time a) Index | Link Index
 
 deriving instance (Eq (Time a)) => Eq (Link a)
 deriving instance (Ord (Time a)) => Ord (Link a)
 
---deriving instance (Show (Time a), Show b , Show (Index (Mod a)), Show (Link (Mod a))) => Show (Mlink b a)
---deriving instance (Show (Forth a), Show (Back a), Show (Time a), Show (Index (Mod a)), Show (Link (Mod a))) => Show (Mod a)
+--deriving instance (Show (Time a), Show b , Show (Index (Step a)), Show (Link (Step a))) => Show (StepLink b a)
+--deriving instance (Show (Forth a), Show (Back a), Show (Time a), Show (Index (Step a)), Show (Link (Step a))) => Show (Step a)
 
-data Mlink b a = Mlink b (Link (Mod a))
+-- a Linkd augmented with a Forth or Back
+data StepLink b a = StepLink b (Link (Step a))
 
 
-data Mod a = Mod {
-        _back :: Maybe (Mlink (Back a) a),
-        _forth :: Maybe (Mlink (Forth a) a)
+-- a double linked list of modifications (of a resource), a resource pointing here with a synchronized state can travel in time moving its link and updating with Back and Forth values
+data Step a = Step {
+        _back :: Maybe (StepLink (Back a) a),
+        _forth :: Maybe (StepLink (Forth a) a)
         }
 
-makeLenses ''Mod
+makeLenses ''Step
 
+-- resources on which we keep history and links to them can carry a time travel request
 data Timed a = Timed {
-        _res :: a,
-        _timestamp :: Time a,
-        _history :: Integer
+        _res :: a, -- black box resource part
+        _timestamp :: Time a, -- last modification applied timestamp
+        _history :: Index -- straight link to a resource part of the history
         }
 makeLenses ''Timed
 
-deriving instance (Show (Time a), Show a) => Show (Timed a)
+-- deriving instance (Show (Time a), Show a) => Show (Timed a)
 deriving instance (Eq (Time a), Eq a) => Eq (Timed a)
 
-type Env m a =  (Monad m, Browse a, Time a ~ Time (Mod a), Ord (Time a))
+-- generic constraint for resources interface, time is same between a and Step a as we confront  Step a and a time instances
+-- Ord (Time a) is necessary to browse history and keep it coherent
+type Env m a =  (Monad m, History a, Time a ~ Time (Step a), Ord (Time a)) 
 
-cursor :: Env m a  => Storage m (Mod a) -> (Time a -> Ordering) -> Timed a -> m (Maybe (Timed a))
-cursor s ct r@(Timed x (ct -> GT) i) = do
+-- bring a resource to a state compatible with a time. Time compatibility is assessed with a (Time a -> Ordering).
+-- When applying a modification is too far in the future and the check gives as a not LT with the actual state we stop travelling
+travel 
+        :: Env m a 
+        => Storage m (Step a) -- we need to access (Step a) from the storage sistem
+        -> (Time a -> Ordering) -- decide where to stop
+        -> Timed a -- a resource seen as a timed
+        -> m (Maybe (Timed a)) -- same resource shifted to right state
+travel s ct r@(Timed x (ct -> GT) i) = do
         m <- pull s $ i -- get history
         case m of
-                Mod _ Nothing -> return $ Just r -- there is nothing beyond, we are actual
-                Mod _ (Just (Mlink f (Link (fmap ct -> Just LT) i ))) -> return $ Just r -- the future is too far, we settle
-                Mod _ (Just (Mlink f (Link (Just t) i))) -> cursor s ct $ Timed (fst $ goforth f x) t i -- let's see the future
+                Step _ Nothing -> return $ Just r -- there is nothing beyond, we are actual
+                Step _ (Just (StepLink f (TLink (ct -> LT) i ))) -> return $ Just r -- the future is too far, we settle
+                Step _ (Just (StepLink f (TLink t i))) -> travel s ct $ Timed (fst $ goforth f x) t i -- let's see the future
 
-cursor s ct r@(Timed x (ct -> EQ) i) = return $ Just r
+travel s ct r@(Timed x (ct -> EQ) i) = return $ Just r
 
-cursor s ct (Timed x _ i) = do
+travel s ct (Timed x _ i) = do
         m <- pull s $ i
         case m of
-                Mod Nothing _ -> return Nothing -- there was nothing at the time
-                Mod (Just (Mlink b (Link (Just t) i))) _ -> ($ Timed (fst $ goback b x) t i) $ case ct t of 
-                                        LT -> cursor s ct -- let's see the past
+                Step Nothing _ -> return Nothing -- there was nothing at the time
+                Step (Just (StepLink b (TLink t i))) _ -> ($ Timed (goback b x) t i) $ case ct t of 
+                                        LT -> travel s ct -- let's see the past
                                         _ -> return . Just -- the past is too behind, we settle
 
-atTime :: Env m a => Storage m (Mod a) -> Timed a -> Time a ->  m (Maybe (Timed a))
-atTime s r t = cursor s (compare t) r
+-- travel to a state compatible with a time
+atTime :: Env m a => Storage m (Step a) -> Timed a -> Time a ->  m (Maybe (Timed a))
+atTime s r t = travel s (compare t) r
 
--- | step a resource till its top
-actual  :: Env m a => Storage m (Mod a) ->  Timed a -> m (Timed a)
-actual s r = fromJust <$> cursor s (const GT) r-- point up, always, it must expose failures only going back
+-- travel to actuality
+actual  :: Env m a => Storage m (Step a) ->  Timed a -> m (Timed a)
+actual s r = fromJust <$> travel s (const GT) r-- point up, always, travel function should expose failures only going back
 
-data TimeError = TimeError | ForthUnacceptable
+data StepError  = TimeError -- trying to assign a timestamp to a new step smaller than the last one
+                | ForthError -- forth check failed
 
--- | insert a modification on the resource actualized, time consecutio is tested here
-modify :: Env m a => Storage m (Mod a) -> Forth a -> Timed a -> Time a -> m (Either TimeError (Timed a))
+-- insert a modification on the resource actualized, time consecutio and Forth correctness is tested here 
+-- (Forth correctness request resource access to actuality)
+modify  :: (Env m a, MonadError StepError m)  
+        => Storage m (Step a) -- storage access to history
+        -> Forth a  -- a step forth
+        -> Timed a  -- the resource in a random (in time) state
+        -> Time a -- the timestamp for the step
+        -> m (Timed a) -- the resource actualized with history updated if successful
 modify s f  r tn = do
         Timed x t i <- actual s r -- can this be expressed in the Timed type ? It's nonsense to pass a Forth for a rewinded Timed
-        if (t < tn) && (checkForth f x) then do 
-                let (x',b) = goforth f x
-                Right <$> Timed x' tn <$>  update s (Mod (Just $ Mlink b $ Link (Just t) i) Nothing)  (\i' -> return . set forth (Just . Mlink f $ Link (Just tn) i')) i 
-         else return $ Left TimeError
+        when  (t >= tn) $ throwError TimeError
+        when  (not $ checkForth f x) $ throwError ForthError
+        let (x',b) = goforth f x
+        Timed x' tn <$>  update s 
+                                (Step (Just $ StepLink b $ TLink t i) Nothing)  
+                                (\i' -> return . set forth (Just . StepLink f $ TLink tn i')) i 
 
--- | a new resource from its core and boot time
-new :: Env m a => Storage m (Mod a) -> a -> Time a -> m (Timed a)
-new s x t = Timed x t <$> push s (Mod Nothing Nothing) 
+-- a new resource from its core and boot time
+new     :: Env m a 
+        => Storage m (Step a) -- storage access to history
+        -> a -- the new core
+        -> Time a -- the boot time for the resource
+        -> m (Timed a) -- a fresh timed resource on the core and timestamp with empty history
+new s x t = Timed x t <$> push s (Step Nothing Nothing) 
 
 
 
