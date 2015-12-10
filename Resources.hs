@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeFamilies, ViewPatterns, TemplateHaskell, Rank2Types, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, UndecidableInstances, StandaloneDeriving, MultiParamTypeClasses, ConstraintKinds #-}
+{-# LANGUAGE TypeFamilies, ViewPatterns, TemplateHaskell, Rank2Types, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, UndecidableInstances, StandaloneDeriving, MultiParamTypeClasses, ConstraintKinds, OverloadedStrings #-}
 
 module Resources where
 
@@ -9,6 +9,8 @@ import Control.Monad.Reader
 import Control.Monad.Except
 import Storage
 import GHC.Exts
+import Data.Bson
+import Data.Time
 
 
 
@@ -21,25 +23,23 @@ class History a where
   goback :: Back a -> a -> a -- apply a back step
 
 -- application specific value for Time
-type family Time a
+
 
 -- a possibly timed link
-data Link a = TLink (Time a) Index | Link Index
+data Link = TLink UTCTime Index | Link Index
 
-deriving instance (Eq (Time a)) => Eq (Link a)
-deriving instance (Ord (Time a)) => Ord (Link a)
 
 --deriving instance (Show (Time a), Show b , Show (Index (Step a)), Show (Link (Step a))) => Show (StepLink b a)
 --deriving instance (Show (Forth a), Show (Back a), Show (Time a), Show (Index (Step a)), Show (Link (Step a))) => Show (Step a)
 
 -- a Linkd augmented with a Forth or Back
-data StepLink b a = StepLink b (Link (Step a))
+data StepLink b = StepLink b Link
 
 
 -- a double linked list of modifications (of a resource), a resource pointing here with a synchronized state can travel in time moving its link and updating with Back and Forth values
 data Step a = Step {
-        _back :: Maybe (StepLink (Back a) a),
-        _forth :: Maybe (StepLink (Forth a) a)
+        _back :: Maybe (StepLink (Back a)),
+        _forth :: Maybe (StepLink (Forth a))
         }
 
 makeLenses ''Step
@@ -47,24 +47,22 @@ makeLenses ''Step
 -- resources on which we keep history and links to them can carry a time travel request
 data Timed a = Timed {
         _res :: a, -- black box resource part
-        _timestamp :: Time a, -- last modification applied timestamp
+        _timestamp :: UTCTime, -- last modification applied timestamp
         _history :: Index -- straight link to a resource part of the history
         }
 makeLenses ''Timed
 
--- deriving instance (Show (Time a), Show a) => Show (Timed a)
-deriving instance (Eq (Time a), Eq a) => Eq (Timed a)
 
 -- generic constraint for resources interface, time is same between a and Step a as we confront  Step a and a time instances
 -- Ord (Time a) is necessary to browse history and keep it coherent
-type Env m a =  (Monad m, History a, Time a ~ Time (Step a), Ord (Time a)) 
+type Env m a =  (Monad m, History a) 
 
 -- bring a resource to a state compatible with a time. Time compatibility is assessed with a (Time a -> Ordering).
 -- When applying a modification is too far in the future and the check gives as a not LT with the actual state we stop travelling
 travel 
         :: Env m a 
         => Storage m (Step a) -- we need to access (Step a) from the storage sistem
-        -> (Time a -> Ordering) -- decide where to stop
+        -> (UTCTime -> Ordering) -- decide where to stop
         -> Timed a -- a resource seen as a timed
         -> m (Maybe (Timed a)) -- same resource shifted to right state
 travel s ct r@(Timed x (ct -> GT) i) = do
@@ -85,7 +83,7 @@ travel s ct (Timed x _ i) = do
                                         _ -> return . Just -- the past is too behind, we settle
 
 -- travel to a state compatible with a time
-atTime :: Env m a => Storage m (Step a) -> Timed a -> Time a ->  m (Maybe (Timed a))
+atTime :: Env m a => Storage m (Step a) -> Timed a -> UTCTime ->  m (Maybe (Timed a))
 atTime s r t = travel s (compare t) r
 
 -- travel to actuality
@@ -101,7 +99,7 @@ modify  :: (Env m a, MonadError StepError m)
         => Storage m (Step a) -- storage access to history
         -> Forth a  -- a step forth
         -> Timed a  -- the resource in a random (in time) state
-        -> Time a -- the timestamp for the step
+        -> UTCTime -- the timestamp for the step
         -> m (Timed a) -- the resource actualized with history updated if successful
 modify s f  r tn = do
         Timed x t i <- actual s r -- can this be expressed in the Timed type ? It's nonsense to pass a Forth for a rewinded Timed
@@ -116,10 +114,25 @@ modify s f  r tn = do
 new     :: Env m a 
         => Storage m (Step a) -- storage access to history
         -> a -- the new core
-        -> Time a -- the boot time for the resource
+        -> UTCTime -- the boot time for the resource
         -> m (Timed a) -- a fresh timed resource on the core and timestamp with empty history
 new s x t = Timed x t <$> push s (Step Nothing Nothing) 
 
 
+data instance Predication (Timed a) = Timestamp UTCTime | History Integer  deriving (Eq,Ord)
 
+instance Serialize Field (Timed a) where
+        parse ("History" := Int64 t) = Just $ History $ fromIntegral t
+        parse ("Timestamp" := UTC t) = Just $ Timestamp t
+        parse _ = Nothing
+        serialize (History t) = ("History" := Int64 (fromIntegral t))
+        serialize (Timestamp t) = ("Timestamp" := UTC t)
+
+makeTimed :: a -> [Field] -> Timed a
+makeTimed x p = let 
+        [History h, Timestamp t] = fromSerialized p
+        in Timed x t h
+        
+destructTimed :: Timed a -> (a, [Field])
+destructTimed (Timed x t h) = (x, toSerialized [History h,Timestamp t])        
 

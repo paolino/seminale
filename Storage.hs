@@ -7,29 +7,28 @@ import qualified Data.Map as M
 import Control.Arrow
 import Control.Monad.Except
 import Control.Lens hiding (Index)
+import Data.List
+import  Data.Maybe
 
 
+data family Predication a -- predicates values
 -- a class for serializable semantic resources, p is the token type (Bson.Field)
+
 class Serialize p a where
-        data family Pred a -- predicates values
-        data family Obj a  -- object values
-        parse :: p -> Maybe (Pred a, Obj a) -- parse a predication
-        serialize :: (Pred a, Obj a) -> p --serialize a predication
+        parse :: p -> Maybe (Predication a) -- parse a predication
+        serialize :: Predication a -> p --serialize a predication
 
 -- in memory structure of a resource. This is an hybrid definition of a resource value, it still has to be projected to the real thing (with a lens ?)
-type Node a = M.Map (Pred a) (Obj a)
+type Node a = [Predication a]
 
 -- raw serialization of a resource
 type Serialized p  = [p]
 
-fromSerialized :: (Ord (Pred a), Serialize p a) => Serialized p -> Maybe (Node a)
-fromSerialized [] = Just $ M.empty
-fromSerialized (x:rs) = do
-        (p',o') <- parse x
-        M.insert p' o' <$> fromSerialized rs
+fromSerialized :: (Ord (Predication a), Serialize p a) => Serialized p -> Node a
+fromSerialized = sort . catMaybes . map parse
 
-toSerialized :: (Ord (Pred a), Serialize p a) =>  Node a -> Serialized p 
-toSerialized  = map serialize . M.toList 
+toSerialized :: Serialize p a =>  Node a -> Serialized p 
+toSerialized  = map serialize 
 ----------------------------------------------------------------------------
 
 
@@ -46,20 +45,19 @@ data Storage m a = Storage  {
       
 data SerializeError = SerializeError
 
-trySerialize f =  maybe (throwError SerializeError) f . fromSerialized 
 
 -- lift a Storage from Serialized to Node
 fromSerializedStorage
-        ::      (Ord (Pred a), Serialize p a, MonadError SerializeError m) 
+        ::      (Ord (Predication a),Serialize p a, MonadError SerializeError m) 
         =>      Storage m (Serialized p)         
         ->      Storage m (Node a)
 
 fromSerializedStorage (Storage pull push update delete) = Storage pl ps ud delete where
-        pl i    = pull i >>= trySerialize return
+        pl i    = fromSerialized <$> pull i 
         ps      = push . toSerialized
-        ud x f  = update (toSerialized x) $ \i' -> fmap toSerialized . trySerialize (f i')
+        ud x f  = update (toSerialized x) $ \i' y -> toSerialized <$> f i' (fromSerialized y)
                         
-        
+{-        
 -- lift a Storage from Node to anything with a lens from Node
 fromNodeStorage 
         ::      Monad m 
@@ -70,4 +68,5 @@ fromNodeStorage l (Storage pull push update delete) = Storage pl ps ud delete  w
         pl i    = view l <$> pull i 
         ps      = push . flip (set l) M.empty
         ud x f  = update (set l x M.empty) $ \i' y -> flip (set l) y <$> f i' (view l y)
-        
+       
+-} 
