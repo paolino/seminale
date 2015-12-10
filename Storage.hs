@@ -29,7 +29,19 @@ fromSerialized = sort . catMaybes . map parse
 
 toSerialized :: Serialize p a =>  Node a -> Serialized p 
 toSerialized  = map serialize 
+
+class Struct a where
+        type SubType a
+        struct :: SubType a -> Node a -> a
+        destruct :: a -> (SubType a, Node a)
+
+up :: (Ord (Predication a),Struct a, Serialize p a) => SubType a -> Serialized p -> a
+up x = struct x . sort . fromSerialized 
+
+down :: (Ord (Predication a),Struct a, Serialize p a) => a -> (SubType a, Serialized p)
+down  = second toSerialized . destruct 
 ----------------------------------------------------------------------------
+
 
 
 -- index to a resource

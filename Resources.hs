@@ -17,7 +17,7 @@ import Data.Time
 -- history is defined as a double linked list, 
 class History a where
   type Back a  -- type of reversed modifications
-  type Forth a -- type of a straight modification
+  data Forth a -- type of a straight modification
   checkForth :: Forth a -> a -> Bool  -- possibly a fake, dunno. check if a Forth is applyable to an a
   goforth :: Forth a -> a -> (a, Back a) -- apply a forth step, defining the new state and a reverse operation
   goback :: Back a -> a -> a -- apply a back step
@@ -49,7 +49,7 @@ data Timed a = Timed {
         _res :: a, -- black box resource part
         _timestamp :: UTCTime, -- last modification applied timestamp
         _history :: Index -- straight link to a resource part of the history
-        }
+        } deriving (Show)
 makeLenses ''Timed
 
 
@@ -119,7 +119,7 @@ new     :: Env m a
 new s x t = Timed x t <$> push s (Step Nothing Nothing) 
 
 
-data instance Predication (Timed a) = Timestamp UTCTime | History Integer  deriving (Eq,Ord)
+data instance Predication (Timed a) =History Integer | Timestamp UTCTime deriving (Eq,Ord, Show)
 
 instance Serialize Field (Timed a) where
         parse ("History" := Int64 t) = Just $ History $ fromIntegral t
@@ -128,11 +128,14 @@ instance Serialize Field (Timed a) where
         serialize (History t) = ("History" := Int64 (fromIntegral t))
         serialize (Timestamp t) = ("Timestamp" := UTC t)
 
-makeTimed :: a -> [Field] -> Timed a
-makeTimed x p = let 
-        [History h, Timestamp t] = fromSerialized p
-        in Timed x t h
-        
-destructTimed :: Timed a -> (a, [Field])
-destructTimed (Timed x t h) = (x, toSerialized [History h,Timestamp t])        
-
+instance (Show (Predication (Timed a))) => Struct (Timed a) where
+        type SubType (Timed a) = a
+        struct x [History h, Timestamp t] = Timed x t h
+        struct x a = error (show a)
+        destruct (Timed x t h) = (x, [History h,Timestamp t])     
+instance History () where
+        data Forth () = DoNothing ()
+        type Back () = Forth ()
+        goforth f _ = ((),f)
+        goback f =  fst . goforth f
+        checkForth _ _ = True

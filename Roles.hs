@@ -19,11 +19,11 @@ import Data.Time
 
 
 -- Roled resource states
-data Roles = Free | Owned Text | Authored Text Text  
+data Roles = Free | Owned Text | Authored Text Text  deriving (Show)
 data Roled a = Roled {
         _core :: a,
         _roles :: Roles
-        }
+        } deriving (Show)
 
 makeLenses ''Roled
 
@@ -34,14 +34,14 @@ instance Serialize Field (Roled a) where
         parse _ = Nothing
         serialize (Owner t) = ("Owner" := String t)
         serialize (Author t) = ("Author" := String t)
-
-makeRoled :: a -> [Field] -> Roled a
-makeRoled x fs = Roled x $ case  fromSerialized fs of
-                [] -> Free
-                [Owner p] -> Owned p
-                [Author p, Owner q] -> Authored q p
-destructRoled :: Roled a -> (a,[Field])
-destructRoled = undefined 
+instance Struct (Roled a) where
+        type SubType (Roled a) = a
+        struct x [] = Roled x Free
+        struct x [Owner p] = Roled x $ Owned p
+        struct x [Author p, Owner q] = Roled x $ Authored q p
+        destruct (Roled x Free) = (x,[])
+        destruct (Roled x (Owned p)) = (x, [Owner p])
+        destruct (Roled x (Authored p q)) = (x,[Owner p, Author q])
         
         
 
@@ -57,14 +57,12 @@ change :: Text -> Roles   -> (Roles, Text)
 change h' (Owned h) = (Owned h' ,h)
 change h'' (Authored h h')  = (Authored h h'' ,h')
 
-data Roling a = Promote Text
+instance (Forth a ~ Back a, History a) => History  (Roled  a)  where
+        data Forth (Roled a) = Promote Text
                 | License
                 | Change Text
                 | Semantics (Forth a)
-
-instance (Forth a ~ Back a, History a) => History  (Roled  a)  where
-        type Forth (Roled a) = Roling a
-        type Back (Roled a) = Roling a
+        type Back (Roled a) = Forth (Roled a)
         goforth (Promote h) x = (over roles (promote h) x ,  License)
         goforth License x = (flip (set roles) x *** Promote) $ license (view roles $ x)
         goforth (Change h) x = (flip (set roles) x *** Change) $ change h (view roles $ x) 
@@ -73,6 +71,7 @@ instance (Forth a ~ Back a, History a) => History  (Roled  a)  where
         checkForth (Promote _) (Roled _ (Authored _ _)) = False
         checkForth _ _ = True
         goback b = fst . goforth b
+
 owner,author :: Roles -> Maybe Text
 
 owner Free = Nothing
@@ -88,7 +87,7 @@ author _ = Nothing
 -- possible openings: changing actual level of role or promoting to the next
 data Action =  Changing | Promoting
 
-mapAction :: Action -> Text -> Roling a
+mapAction :: Action -> Text -> Forth (Roled a)
 mapAction Changing = Change
 mapAction Promoting = Promote
 
