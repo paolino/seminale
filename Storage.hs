@@ -12,14 +12,20 @@ import  Data.Maybe
 
 
 data family Predication a -- predicates values
+type Node a = [Predication a]
+
+class Struct a where
+        type SubType a
+        struct :: SubType a -> Node a -> a
+        destruct :: a -> (SubType a, Node a)
+
+
 -- a class for serializable semantic resources, p is the token type (Bson.Field)
 
 class Serialize p a where
         parse :: p -> Maybe (Predication a) -- parse a predication
         serialize :: Predication a -> p --serialize a predication
 
--- in memory structure of a resource. This is an hybrid definition of a resource value, it still has to be projected to the real thing (with a lens ?)
-type Node a = [Predication a]
 
 -- raw serialization of a resource
 type Serialized p  = [p]
@@ -30,11 +36,7 @@ fromSerialized = sort . catMaybes . map parse
 toSerialized :: Serialize p a =>  Node a -> Serialized p 
 toSerialized  = map serialize 
 
-class Struct a where
-        type SubType a
-        struct :: SubType a -> Node a -> a
-        destruct :: a -> (SubType a, Node a)
-
+-- combining Struct and Serialize
 up :: (Ord (Predication a),Struct a, Serialize p a) => SubType a -> Serialized p -> a
 up x = struct x . sort . fromSerialized 
 

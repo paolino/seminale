@@ -119,7 +119,7 @@ new     :: Env m a
 new s x t = Timed x t <$> push s (Step Nothing Nothing) 
 
 
-data instance Predication (Timed a) =History Integer | Timestamp UTCTime deriving (Eq,Ord, Show)
+data instance Predication (Timed a) = History Integer | Timestamp UTCTime deriving (Eq,Ord, Show)
 
 instance Serialize Field (Timed a) where
         parse ("History" := Int64 t) = Just $ History $ fromIntegral t

@@ -80,6 +80,9 @@ owner (Authored p _) = Just p
 
 author (Authored _ a) = Just a
 author _ = Nothing
+
+checkValidPost :: Text -> Roled a -> Bool
+checkValidPost h (Roled _ r) = (author r <|> owner r) == Just h
 ---------------------
 -- contracting roles
 ---------------------
@@ -137,7 +140,7 @@ postRoler st sr h t (Roler ac h' i) = do
 
 
 
-
+-- instance Serialize Field 
 {-
 
 -------------------------
