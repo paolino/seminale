@@ -10,12 +10,8 @@ addons:
         sources:
          - hvr-ghc
         packages:
-
          - cabal-install-1.18
-
          - cabal-install-1.22
-
-
          - ghc-7.8.4
          - ghc-7.10.3
 
